@@ -1,6 +1,6 @@
 #!/usr/bin/python
 #
-# json2gelf
+# journald-to-gelf
 # ============
 #
 # Dependencies:
