@@ -1,5 +1,5 @@
 # journald-to-gelf
-Stream journald json events to a gelf endpoint.
+Stream journald json events to a GELF endpoint.
 Supports sending via tcp,udp,tls protocols.
 
 ## Dependencies
@@ -12,9 +12,9 @@ Supports sending via tcp,udp,tls protocols.
 
 #### Optional
 * **[-e|--environment]** : GELF *environment* optional message field to append to before sending (*default: None*).
-* **[-f|--filters]** : journald comma-separated filters (*default: None*). If specified, will send to gelf endpoint only if there's a match with least one of the fields' value among 'SYSLOG_IDENTIFIER', 'SYSTEMD_UNIT' and 'UNIT'.
-* **[-p|--port]** : gelf endpoint port (*default: 12201*)
-* **[-t|--transportprotocol]** : gelf endpoint protocol (*default: udp, choices: [udp,tcp,tls]*)
+* **[-f|--filters]** : journald comma-separated filters (*default: None*). If specified, will send to GELF endpoint only if there's a match with least one of the fields' value among 'SYSLOG_IDENTIFIER', 'SYSTEMD_UNIT' and 'UNIT'. Useful for multiplexing systemd_units, units or syslog log entries into one single GELF stream.
+* **[-p|--port]** : GELF endpoint port (*default: 12201*)
+* **[-t|--transportprotocol]** : GELF endpoint protocol (*default: udp, choices: [udp,tcp,tls]*)
 
 
 ## Examples
