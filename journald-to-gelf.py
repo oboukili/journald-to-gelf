@@ -10,7 +10,7 @@
 # Heavily inspired from journal2gelf.
 # https://github.com/joemiller
 #
-# Uses Mirec Miskuf's implementation on how to get string objects instead of Unicode one when calling json.
+# Uses Mirec Miskuf's implementation on how to get string objects instead of Unicode one when calling json.loads
 # http://stackoverflow.com/a/33571117/1709587
 #
 # Released under the MIT license, see LICENSE for details.
@@ -20,8 +20,6 @@ from collections import deque
 from pygelf import GelfUdpHandler,GelfTcpHandler,GelfTlsHandler
 
 unfilteredJournalctlKeys = ['SYSLOG_IDENTIFIER', 'SYSTEMD_UNIT', 'UNIT']
-
-import json
 
 def json_loads_byteified(json_text):
     return _byteify(
