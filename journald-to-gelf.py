@@ -1,6 +1,6 @@
 #!/usr/bin/python
 #
-# json2gelf
+# journald-to-gelf
 # ============
 #
 # Dependencies:
@@ -10,6 +10,9 @@
 # Heavily inspired from journal2gelf.
 # https://github.com/joemiller
 #
+# Uses Mirec Miskuf's implementation on how to get string objects instead of Unicode one when calling json.
+# http://stackoverflow.com/a/33571117/1709587
+#
 # Released under the MIT license, see LICENSE for details.
 
 import sys,json,zlib,signal,re
@@ -17,6 +20,26 @@ from collections import deque
 from pygelf import GelfUdpHandler,GelfTcpHandler,GelfTlsHandler
 
 unfilteredJournalctlKeys = ['SYSLOG_IDENTIFIER', 'SYSTEMD_UNIT', 'UNIT']
+
+import json
+
+def json_loads_byteified(json_text):
+    return _byteify(
+        json.loads(json_text, object_hook=_byteify),
+        ignore_dicts=True
+    )
+
+def _byteify(data, ignore_dicts = False):
+    if isinstance(data, unicode):
+        return data.encode('utf-8')
+    if isinstance(data, list):
+        return [ _byteify(item, ignore_dicts=True) for item in data ]
+    if isinstance(data, dict) and not ignore_dicts:
+        return {
+            _byteify(key, ignore_dicts=True): _byteify(value, ignore_dicts=True)
+            for key, value in data.iteritems()
+        }
+    return data
 
 class StreamToGelf:
 
@@ -42,7 +65,7 @@ class StreamToGelf:
     def _send_gelf(self):
         message = {'version': '1.1'}
         try:
-            record = json.loads(''.join(self.buffer))
+            record = json.loads_byteified(''.join(self.buffer))
             for key, value in record.iteritems():
                 # journalctl's JSON exporter will convert unprintable (incl. newlines)
                 # strings into an array of integers. We convert these integers into
@@ -62,7 +85,7 @@ class StreamToGelf:
                     message['short_message'] = value
                     # try to unnest and index json message keys, if the message is a valid json.
                     try:
-                        myhash = json.loads(value)
+                        myhash = json.loads_byteified(value)
                     except ValueError:
                         pass
                     else:
