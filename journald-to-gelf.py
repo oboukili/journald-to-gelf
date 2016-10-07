@@ -1,6 +1,6 @@
 #!/usr/bin/python
 #
-# journald-to-gelf
+# json2gelf
 # ============
 #
 # Dependencies:
@@ -20,16 +20,16 @@ unfilteredJournalctlKeys = ['SYSLOG_IDENTIFIER', 'SYSTEMD_UNIT', 'UNIT']
 
 class StreamToGelf:
 
-    def __init__(self, stream, host='localhost', port=12201, protocol='udp', streamtype='journalctl-json', _filters=None):
+    def __init__(self, stream, host='localhost', port=12201, protocol='udp', _filters=None, environment=None):
         signal.signal(signal.SIGINT, self.stop)
         signal.signal(signal.SIGTERM, self.stop)
         self.buffer = deque()
+        self.environment = environment
         if _filters is not None:
             self.filters = _filters.split(',')
         else:
             self.filters = None
         self.protocol = str(protocol)
-        self.streamtype = str(streamtype)
         self.stream = stream
         self.handleropts = {'host': str(host), 'port': int(port), 'protocol': str(protocol)}
         if str(protocol) == 'udp':
@@ -42,46 +42,42 @@ class StreamToGelf:
     def _send_gelf(self):
         message = {'version': '1.1'}
         try:
-            if self.streamtype == 'journalctl-json':
-                try:
-                    record = json.loads(''.join(self.buffer))
-                    for key, value in record.iteritems():
-                        # journalctl's JSON exporter will convert unprintable (incl. newlines)
-                        # strings into an array of integers. We convert these integers into
-                        # their ascii representation and concatenate them together
-                        # to reconstitute the string.
-                        if isinstance(value,list):
-                            value = ''.join([chr(x) for x in value])
-                        if key == '__REALTIME_TIMESTAMP':
-                            # convert from systemd's format of microseconds expressed as
-                            # an integer to graylog's float format, eg: "seconds.microseconds"
-                            message['timestamp'] = float(value) / (1000 * 1000)
-                        elif key == 'PRIORITY':
-                            message['level'] = int(value)
-                        elif key == '_HOSTNAME':
-                            message['host'] = value
-                        elif key == 'MESSAGE':
-                            message['short_message'] = value
-                            # try to unnest and index json message keys, if the message is a valid json.
-                            try:
-                                myhash = json.loads(value)
-                            except ValueError:
-                                pass
+            record = json.loads(''.join(self.buffer))
+            for key, value in record.iteritems():
+                # journalctl's JSON exporter will convert unprintable (incl. newlines)
+                # strings into an array of integers. We convert these integers into
+                # their ascii representation and concatenate them together
+                # to reconstitute the string.
+                if isinstance(value,list):
+                    value = ''.join([chr(x) for x in value])
+                if key == '__REALTIME_TIMESTAMP':
+                    # convert from systemd's format of microseconds expressed as
+                    # an integer to graylog's float format, eg: "seconds.microseconds"
+                    message['timestamp'] = float(value) / (1000 * 1000)
+                elif key == 'PRIORITY':
+                    message['level'] = int(value)
+                elif key == '_HOSTNAME':
+                    message['host'] = value
+                elif key == 'MESSAGE':
+                    message['short_message'] = value
+                    # try to unnest and index json message keys, if the message is a valid json.
+                    try:
+                        myhash = json.loads(value)
+                    except ValueError:
+                        pass
+                    else:
+                        for hashkey, hashvalue in myhash.iteritems():
+                            if hashkey == 'message':
+                                message['short_message'] = hashvalue
                             else:
-                                for hashkey, hashvalue in myhash.iteritems():
-                                    if hashkey == 'message':
-                                        message['short_message'] = hashvalue
-                                    else:
-                                        message['_' + str(hashkey).lower()]  = hashvalue
-                        else:
-                            if len(unfilteredJournalctlKeys) > 0 and str(key) in unfilteredJournalctlKeys:
-                                message['_' + str(key).lower()] = value
-                        if 'level' not in message.keys() and 'loglevel' not in message.keys():
-                            message['loglevel'] = "notice"
-                except Exception as e:
-                    print str(e)
-        except ValueError:
-            print "Warning: invalid JSON. Skipping this record."
+                                message['_' + str(hashkey).lower()]  = hashvalue
+                else:
+                    if len(unfilteredJournalctlKeys) > 0 and str(key) in unfilteredJournalctlKeys:
+                        message['_' + str(key).lower()] = value
+                if 'level' not in message.keys() and 'loglevel' not in message.keys():
+                    message['loglevel'] = "notice"
+        except ValueError as e:
+            print "ERROR - cannot load json: " + str(e)
         else:
             if self.filters is not None:
                 TO_SEND = False
@@ -93,6 +89,8 @@ class StreamToGelf:
             else:
                 TO_SEND = True
             if TO_SEND:
+                if self.environment is not None:
+                    message['_environment'] = str(self.environment)
                 try:
                     if self.protocol != 'udp':
                         self.gelfhandler.send(zlib.compress(json.dumps(message)))
@@ -126,8 +124,10 @@ if __name__ == '__main__':
     opts_parser.add_option('-t', '--transport-protocol', dest='transportprotocol', default='udp', type='choice', choices=['udp','tcp','tls'],
                             help='Graylog2 input protocol (default: %default)')
     opts_parser.add_option('-f', '--filters', dest='filters', type='str', default=None,
-                            help='comma separated systemd syslog_identifier filter strings (default: %default)')
+                            help='Comma separated systemd syslog_identifier filter strings (default: %default)')
+    opts_parser.add_option('-e', '--environment', dest='environment', type='str', default=None,
+                            help='Optional gelf message field "environment" to append to (default: %default)')
     (opts, args) = opts_parser.parse_args()
 
-    parser = StreamToGelf(stream=sys.stdin, host=opts.host, port=opts.port, protocol=opts.transportprotocol, _filters=opts.filters)
+    parser = StreamToGelf(stream=sys.stdin, host=opts.host, port=opts.port, protocol=opts.transportprotocol, _filters=opts.filters, environment=opts.environment)
     parser.run()
