@@ -63,7 +63,7 @@ class StreamToGelf:
     def _send_gelf(self):
         message = {'version': '1.1'}
         try:
-            record = json.loads_byteified(''.join(self.buffer))
+            record = json_loads_byteified(''.join(self.buffer))
             for key, value in record.iteritems():
                 # journalctl's JSON exporter will convert unprintable (incl. newlines)
                 # strings into an array of integers. We convert these integers into
@@ -83,7 +83,7 @@ class StreamToGelf:
                     message['short_message'] = value
                     # try to unnest and index json message keys, if the message is a valid json.
                     try:
-                        myhash = json.loads_byteified(value)
+                        myhash = json_loads_byteified(value)
                     except ValueError:
                         pass
                     else:
