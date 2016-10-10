@@ -1,4 +1,5 @@
 #!/usr/bin/python
+# coding: utf-8
 #
 # journald-to-gelf
 # ============
@@ -10,12 +11,12 @@
 # Heavily inspired from journal2gelf.
 # https://github.com/joemiller
 #
-# Uses Mirec Miskuf's implementation on how to get string objects instead of Unicode one when calling json.loads
+# Uses Mirec Miskuf's implementation on how to get string objects instead of Unicode one when calling
 # http://stackoverflow.com/a/33571117/1709587
 #
 # Released under the MIT license, see LICENSE for details.
 
-import sys,json,zlib,signal,re
+import sys,json,zlib,signal,re,argparse
 from collections import deque
 from pygelf import GelfUdpHandler,GelfTcpHandler,GelfTlsHandler
 
@@ -41,18 +42,19 @@ def _byteify(data, ignore_dicts = False):
 
 class StreamToGelf:
 
-    def __init__(self, stream, host='localhost', port=12201, protocol='udp', _filters=None, environment=None):
+    def __init__(self, stream, host='localhost', port=12201, protocol='udp', _filters=None, environment=None, json_only=False):
         signal.signal(signal.SIGINT, self.stop)
         signal.signal(signal.SIGTERM, self.stop)
         self.buffer = deque()
-        self.environment = environment
+        self.environment = str(environment)
         if _filters is not None:
             self.filters = _filters.split(',')
         else:
             self.filters = None
+        self.json_only = bool(json_only)
         self.protocol = str(protocol)
         self.stream = stream
-        self.handleropts = {'host': str(host), 'port': int(port), 'protocol': str(protocol)}
+        self.handleropts= {'host': str(host), 'port': int(port), 'protocol': str(protocol)}
         if str(protocol) == 'udp':
             self.gelfhandler = GelfUdpHandler(host=str(host), port=int(port),include_extra_fields=True, compress=True)
         elif str(protocol) == 'tcp':
@@ -63,62 +65,80 @@ class StreamToGelf:
     def _send_gelf(self):
         message = {'version': '1.1'}
         try:
+            DO_NOT_SEND = False
             record = json_loads_byteified(''.join(self.buffer))
-            for key, value in record.iteritems():
-                # journalctl's JSON exporter will convert unprintable (incl. newlines)
-                # strings into an array of integers. We convert these integers into
-                # their ascii representation and concatenate them together
-                # to reconstitute the string.
-                if isinstance(value,list):
-                    value = ''.join([chr(x) for x in value])
-                if key == '__REALTIME_TIMESTAMP':
-                    # convert from systemd's format of microseconds expressed as
-                    # an integer to graylog's float format, eg: "seconds.microseconds"
-                    message['timestamp'] = float(value) / (1000 * 1000)
-                elif key == 'PRIORITY':
-                    message['level'] = int(value)
-                elif key == '_HOSTNAME':
-                    message['host'] = value
-                elif key == 'MESSAGE':
-                    message['short_message'] = value
-                    # try to unnest and index json message keys, if the message is a valid json.
-                    try:
-                        myhash = json_loads_byteified(value)
-                    except ValueError:
-                        pass
-                    else:
-                        for hashkey, hashvalue in myhash.iteritems():
-                            if hashkey == 'message':
-                                message['short_message'] = hashvalue
-                            else:
-                                message['_' + str(hashkey).lower()]  = hashvalue
-                else:
-                    if len(unfilteredJournalctlKeys) > 0 and str(key) in unfilteredJournalctlKeys:
-                        message['_' + str(key).lower()] = value
-                if 'level' not in message.keys() and 'loglevel' not in message.keys():
-                    message['loglevel'] = "notice"
         except ValueError as e:
             print "ERROR - cannot load json: " + str(e)
         else:
-            if self.filters is not None:
-                TO_SEND = False
-                matchlist = [record[filterkey] for filterkey in [key for key in record.keys() if key in unfilteredJournalctlKeys]]
-                for filterelement in self.filters:
-                    for matchelement in matchlist:
-                        if re.search(str(filterelement),str(matchelement)):
-                            TO_SEND = True
-            else:
-                TO_SEND = True
-            if TO_SEND:
+            if 'MESSAGE' in record.keys():
+                for key, value in record.iteritems():
+                    # journalctl's JSON exporter will convert unprintable (incl. newlines)
+                    # strings into an array of integers. We convert these integers into
+                    # their ascii representation and concatenate them together
+                    # to reconstitute the string.
+                    # if self.filters is not None:
+                    #     matchlist = [record[filterkey] for filterkey in [key for key in record.keys() if key in unfilteredJournalctlKeys]]
+                    #     for filterelement in self.filters:
+                    #         for matchelement in matchlist:
+                    #             if re.search(str(filterelement),str(matchelement)):
+                    #                 break
+                    #         else:
+                    #             break
+
+                    if key == '__REALTIME_TIMESTAMP':
+                        # convert from systemd's format of microseconds expressed as
+                        # an integer to graylog's float format, eg: "seconds.microseconds"
+                        message['timestamp'] = float(value) / (1000 * 1000)
+                    elif key == '_HOSTNAME':
+                        message['host'] = value
+                    elif key == 'MESSAGE':
+                        # try to unnest and index json message keys, if the message is a valid json.
+                        try:
+                            innerrecord = json_loads_byteified(value)
+                        except AttributeError as e:
+                            print "1"
+                            if self.json_only:
+                                DO_NOT_SEND = True
+                            else:
+                                message['short_message'] = value
+                        except ValueError as e:
+                            if self.json_only:
+                                DO_NOT_SEND = True
+                            else:
+                                message['short_message'] = value
+                        except Exception as e:
+                            print (e)
+                        else:
+                            # print "this is a json hash: " + str(innerrecord)
+                            try:
+                                if 'message' in innerrecord.keys():
+                                    for hashkey, hashvalue in innerrecord.iteritems():
+                                        if str(hashkey) == 'message':
+                                            message['short_message'] = hashvalue
+                                        else:
+                                            message['_' + str(hashkey).lower()] = hashvalue
+                                else:
+                                    message['short_message'] = json.dumps(innerrecord)
+                                    # except:
+                                    #     message['short_message'] = innerrecord
+                            except Exception as e:
+                                print "EXCEPTION: " + str(e)
+                    else:
+                        if len(unfilteredJournalctlKeys) > 0 and str(key) in unfilteredJournalctlKeys:
+                            message['_' + str(key).lower()] = value
                 if self.environment is not None:
                     message['_environment'] = str(self.environment)
                 try:
-                    if self.protocol != 'udp':
-                        self.gelfhandler.send(zlib.compress(json.dumps(message)))
-                    else:
-                        self.gelfhandler.send(json.dumps(message))
+                    if not DO_NOT_SEND:
+                        print "will be sent: " + str(json.dumps(message))
+                        if self.protocol != 'udp':
+                            self.gelfhandler.send(zlib.compress(json.dumps(message)))
+                        else:
+                            self.gelfhandler.send(json.dumps(message))
                 except Exception as e:
                     print str(e)
+            else:
+                print 'discarded'
         finally:
             self.buffer.clear()
 
@@ -135,20 +155,14 @@ class StreamToGelf:
         sys.exit(0)
 
 if __name__ == '__main__':
-    import optparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-s', '--host', dest='host', default='localhost', type=str, help='Graylog2 host or IP', required=True)
+    parser.add_argument('-p', '--port', dest='port', default=12201, type=int, help='Graylog2 input port')
+    parser.add_argument('-t', '--transport-protocol', dest='transportprotocol', default='udp', type=str, choices=['udp','tcp','tls'],help='Graylog2 input protocol')
+    parser.add_argument('-f', '--filters', dest='filters', type=str, default=None, help='Comma separated systemd syslog_identifier filter strings')
+    parser.add_argument('-e', '--environment', dest='environment', type=str, default=None, help='Optional gelf message field "environment" to append to')
+    parser.add_argument('-j', '--json-only', dest='json_only', action='store_true', default=False, help='Stream json formatted logs only')
+    results = parser.parse_args()
 
-    opts_parser = optparse.OptionParser()
-    opts_parser.add_option('-s', '--host', dest='host', default='localhost', type='str',
-                            help='Graylog2 host or IP (default: %default)')
-    opts_parser.add_option('-p', '--port', dest='port', default=12201, type='int',
-                            help='Graylog2 input port (default: %default)')
-    opts_parser.add_option('-t', '--transport-protocol', dest='transportprotocol', default='udp', type='choice', choices=['udp','tcp','tls'],
-                            help='Graylog2 input protocol (default: %default)')
-    opts_parser.add_option('-f', '--filters', dest='filters', type='str', default=None,
-                            help='Comma separated systemd syslog_identifier filter strings (default: %default)')
-    opts_parser.add_option('-e', '--environment', dest='environment', type='str', default=None,
-                            help='Optional gelf message field "environment" to append to (default: %default)')
-    (opts, args) = opts_parser.parse_args()
-
-    parser = StreamToGelf(stream=sys.stdin, host=opts.host, port=opts.port, protocol=opts.transportprotocol, _filters=opts.filters, environment=opts.environment)
-    parser.run()
+    mystream = StreamToGelf(stream=sys.stdin, host=results.host, port=results.port, protocol=results.transportprotocol, _filters=results.filters, environment=results.environment, json_only=results.json_only)
+    mystream.run()
