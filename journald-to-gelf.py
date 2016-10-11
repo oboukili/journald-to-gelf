@@ -63,82 +63,80 @@ class StreamToGelf:
             self.gelfhandler = GelfTlsHandler(host=str(host), port=int(port),include_extra_fields=True)
 
     def _send_gelf(self):
-        message = {'version': '1.1'}
+
         try:
-            DO_NOT_SEND = False
             record = json_loads_byteified(''.join(self.buffer))
         except ValueError as e:
             print "ERROR - cannot load json: " + str(e)
         else:
-            if 'MESSAGE' in record.keys():
-                for key, value in record.iteritems():
-                    # journalctl's JSON exporter will convert unprintable (incl. newlines)
-                    # strings into an array of integers. We convert these integers into
-                    # their ascii representation and concatenate them together
-                    # to reconstitute the string.
-                    # if self.filters is not None:
-                    #     matchlist = [record[filterkey] for filterkey in [key for key in record.keys() if key in unfilteredJournalctlKeys]]
-                    #     for filterelement in self.filters:
-                    #         for matchelement in matchlist:
-                    #             if re.search(str(filterelement),str(matchelement)):
-                    #                 break
-                    #         else:
-                    #             break
+            try:
+                assert 'MESSAGE' in record.keys()
+            except AssertionError:
+                pass
+            else:
+                if self.filters is not None:
+                    matchlist = [record[filterkey] for filterkey in record.keys() if filterkey in unfilteredJournalctlKeys]
+                    for filterelement in self.filters:
+                        for matchelement in matchlist:
+                            if re.search(str(filterelement),str(matchelement)):
+                                break
+                        else:
+                            continue
+                        break
 
-                    if key == '__REALTIME_TIMESTAMP':
-                        # convert from systemd's format of microseconds expressed as
-                        # an integer to graylog's float format, eg: "seconds.microseconds"
-                        message['timestamp'] = float(value) / (1000 * 1000)
-                    elif key == '_HOSTNAME':
-                        message['host'] = value
-                    elif key == 'MESSAGE':
+                message = {'version': '1.1'}
+                for key, value in record.iteritems():
+                    if key == 'MESSAGE':
                         # try to unnest and index json message keys, if the message is a valid json.
                         try:
                             innerrecord = json_loads_byteified(value)
-                        except AttributeError as e:
-                            print "1"
+                        except AttributeError:
                             if self.json_only:
-                                DO_NOT_SEND = True
+                                break
                             else:
                                 message['short_message'] = value
-                        except ValueError as e:
+                        except ValueError:
                             if self.json_only:
-                                DO_NOT_SEND = True
+                                break
                             else:
                                 message['short_message'] = value
                         except Exception as e:
                             print (e)
+                            break
                         else:
-                            # print "this is a json hash: " + str(innerrecord)
                             try:
-                                if 'message' in innerrecord.keys():
+                                assert 'message' in innerrecord.keys()
+                            except AssertionError:
+                                message['short_message'] = json.dumps(innerrecord)
+                            else:
+                                try:
                                     for hashkey, hashvalue in innerrecord.iteritems():
                                         if str(hashkey) == 'message':
                                             message['short_message'] = hashvalue
                                         else:
                                             message['_' + str(hashkey).lower()] = hashvalue
-                                else:
-                                    message['short_message'] = json.dumps(innerrecord)
-                                    # except:
-                                    #     message['short_message'] = innerrecord
-                            except Exception as e:
-                                print "EXCEPTION: " + str(e)
+                                except Exception as e:
+                                    print "EXCEPTION: " + str(e)
+                    elif key == '__REALTIME_TIMESTAMP':
+                        # convert from systemd's format of microseconds expressed as
+                        # an integer to graylog's float format, eg: "seconds.microseconds"
+                        message['timestamp'] = float(value) / (1000 * 1000)
+                    elif key == '_HOSTNAME':
+                        message['host'] = value
                     else:
                         if len(unfilteredJournalctlKeys) > 0 and str(key) in unfilteredJournalctlKeys:
                             message['_' + str(key).lower()] = value
-                if self.environment is not None:
-                    message['_environment'] = str(self.environment)
-                try:
-                    if not DO_NOT_SEND:
-                        print "will be sent: " + str(json.dumps(message))
+                    if self.environment is not None:
+                        message['_environment'] = str(self.environment)
+
+                else:
+                    try:
                         if self.protocol != 'udp':
                             self.gelfhandler.send(zlib.compress(json.dumps(message)))
                         else:
                             self.gelfhandler.send(json.dumps(message))
-                except Exception as e:
-                    print str(e)
-            else:
-                print 'discarded'
+                    except Exception as e:
+                        print str(e)
         finally:
             self.buffer.clear()
 
@@ -149,6 +147,7 @@ class StreamToGelf:
             self._send_gelf()
 
     def stop(self,*args):
+        self.buffer.clear()
         self.gelfhandler.flush()
         self.gelfhandler.close()
         print "Exiting..."
